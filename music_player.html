@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>My Music Player (Auto Skip Ver.)</title>
+  <style>
+    body {
+      background-color: #111;
+      color: #eee;
+      font-family: 'Segoe UI', sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+    }
+
+    h1 {
+      margin-bottom: 10px;
+      font-weight: 400;
+    }
+
+    .controls {
+      margin: 10px 0;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    input[type="number"] {
+      width: 80px;
+      padding: 5px;
+      background: #222;
+      color: #fff;
+      border: 1px solid #555;
+      border-radius: 4px;
+    }
+
+    button {
+      background: #333;
+      color: #fff;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+
+    button:hover {
+      background: #555;
+    }
+
+    .url-list {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      width: 90%;
+      max-width: 600px;
+      margin-top: 10px;
+    }
+
+    .url-entry {
+      display: flex;
+      gap: 8px;
+    }
+
+    .url-entry input {
+      flex: 1;
+      background: #222;
+      border: 1px solid #555;
+      color: #fff;
+      border-radius: 4px;
+      padding: 5px;
+    }
+
+    iframe {
+      margin-top: 20px;
+      width: 560px;
+      height: 315px;
+      border: none;
+    }
+
+    .loading {
+      margin-top: 20px;
+      color: #aaa;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎧 My YouTube Music Player</h1>
+
+  <div class="controls">
+    <label>再生時間（分）:</label>
+    <input type="number" id="duration" value="30" min="1">
+    <button id="startBtn">再生開始</button>
+    <button id="stopBtn">停止</button>
+  </div>
+
+  <div class="url-list" id="urlList"></div>
+  <button id="addUrlBtn">＋ 曲を追加</button>
+
+  <div id="loading" class="loading" style="display:none;">再生準備中...</div>
+  <iframe id="player" allow="autoplay" allowfullscreen></iframe>
+
+  <script>
+    const urlList = document.getElementById("urlList");
+    const player = document.getElementById("player");
+    const loading = document.getElementById("loading");
+
+    const defaultUrls = [
+      "https://youtu.be/PqJNc9KVIZE",
+      "https://youtu.be/xxFkW3PCT5M",
+      "https://youtu.be/qrwVthk38b0",
+      "https://youtu.be/EMGyiiTC7sg",
+      "https://youtu.be/cQKGUgOfD8U",
+      "https://youtu.be/XogSflwXgpw",
+      "https://youtu.be/xzoShzMIlIM",
+      "https://youtu.be/jQmYZWjLwzw"
+    ];
+
+    function extractVideoId(url) {
+      try {
+        const u = new URL(url);
+        if (u.hostname.includes("youtu.be")) {
+          return u.pathname.slice(1);
+        }
+        if (u.searchParams.has("v")) {
+          return u.searchParams.get("v");
+        }
+      } catch (e) {
+        console.warn("Invalid YouTube URL:", url);
+      }
+      return null;
+    }
+
+    function addUrlInput(value = "") {
+      const div = document.createElement("div");
+      div.className = "url-entry";
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = value;
+      const removeBtn = document.createElement("button");
+      removeBtn.textContent = "－";
+      removeBtn.onclick = () => div.remove();
+      div.appendChild(input);
+      div.appendChild(removeBtn);
+      urlList.appendChild(div);
+    }
+
+    function getAllUrls() {
+      return Array.from(document.querySelectorAll(".url-entry input"))
+        .map(input => input.value.trim())
+        .filter(url => url);
+    }
+
+    document.getElementById("addUrlBtn").onclick = () => addUrlInput();
+    defaultUrls.forEach(u => addUrlInput(u));
+
+    let stopPlayback = false;
+
+    async function isEmbeddable(videoId) {
+      return new Promise(resolve => {
+        const testIframe = document.createElement("iframe");
+        testIframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=0`;
+        testIframe.width = 1;
+        testIframe.height = 1;
+        testIframe.style.display = "none";
+        document.body.appendChild(testIframe);
+
+        testIframe.onload = () => {
+          // 再生不可ページでは onload は呼ばれるが中身が blank なので判定
+          const contentWindow = testIframe.contentWindow;
+          if (!contentWindow || !contentWindow.location) {
+            resolve(false);
+          } else {
+            resolve(true);
+          }
+          document.body.removeChild(testIframe);
+        };
+
+        setTimeout(() => {
+          document.body.removeChild(testIframe);
+          resolve(false);
+        }, 3000);
+      });
+    }
+
+    async function playRandomVideos() {
+      stopPlayback = false;
+      loading.style.display = "block";
+
+      const durationMinutes = parseInt(document.getElementById("duration").value, 10);
+      const totalDuration = (durationMinutes + (Math.random() * 10 - 5)) * 60 * 1000; // ±5分
+      const urls = getAllUrls();
+
+      let elapsed = 0;
+      while (elapsed < totalDuration && !stopPlayback) {
+        const randomUrl = urls[Math.floor(Math.random() * urls.length)];
+        const id = extractVideoId(randomUrl);
+        if (!id) continue;
+
+        // 埋め込み可否チェック
+        const ok = await isEmbeddable(id);
+        if (!ok) {
+          console.warn(`Skipping non-embeddable video: ${id}`);
+          continue; // スキップ
+        }
+
+        player.src = `https://www.youtube.com/embed/${id}?autoplay=1&enablejsapi=1`;
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        loading.style.display = "none";
+
+        const videoDuration = (4 + Math.random()) * 60 * 1000; // 平均4~5分
+        await new Promise(resolve => setTimeout(resolve, videoDuration));
+        elapsed += videoDuration;
+      }
+    }
+
+    document.getElementById("startBtn").onclick = playRandomVideos;
+    document.getElementById("stopBtn").onclick = () => {
+      stopPlayback = true;
+      player.src = "";
+      loading.style.display = "none";
+    };
+  </script>
+</body>
+</html>
