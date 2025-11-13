@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Shuffle Music Player</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body {
+  font-family: 'Arial', sans-serif;
+  margin: 0;
+  padding: 20px;
+  background-color: #dcdcdc; /* ライトグレー背景 */
+  color: #111;
+}
+h1 {
+  text-align: center;
+  font-size: 2em;
+  margin-bottom: 20px;
+  font-weight: bold;
+}
+
+/* --- コントロール --- */
+#controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+input[type=text], input[type=number] {
+  width: 70%;
+  max-width: 400px;
+  padding: 10px;
+  border-radius: 4px;
+  border: 1px solid #aaa;
+  font-size: 1em;
+}
+button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  background-color: #ff0000;
+  color: #fff;
+  font-weight: bold;
+  cursor: pointer;
+  transition: 0.2s;
+}
+button:hover {
+  background-color: #cc0000;
+}
+
+/* --- 横並びコンテナ --- */
+#mainContainer {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+/* --- 動画プレイヤー --- */
+#videoContainer {
+  flex: 1 1 auto;
+  min-width: 320px;
+  max-width: 640px;
+}
+iframe {
+  width: 100%;
+  height: 360px;
+}
+
+/* --- 再生リスト --- */
+#videoListContainer {
+  width: 300px;
+  max-height: 400px;
+  overflow-y: auto;
+  background-color: #f0f0f0;
+  border-radius: 4px;
+  padding: 10px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+#videoListContainer ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+#videoListContainer li {
+  background-color: #fff;
+  margin: 5px 0;
+  padding: 8px 12px;
+  border-radius: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: bold;
+  font-size: 0.95em;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+#videoListContainer li button {
+  padding: 4px 8px;
+  font-size: 0.85em;
+  background-color: #ff5555;
+  border-radius: 4px;
+}
+#videoListContainer li button:hover {
+  background-color: #cc4444;
+}
+
+/* --- レスポンシブ --- */
+@media(max-width: 800px){
+  #mainContainer {
+    flex-direction: column;
+    align-items: center;
+  }
+  #videoListContainer {
+    width: 90%;
+    max-height: 300px;
+  }
+  iframe {
+    height: 200px;
+  }
+}
+</style>
+</head>
+<body>
+<h1>Shuffle Music Player</h1>
+
+<div id="controls">
+  <input type="text" id="videoURL" placeholder="YouTube動画URLを入力">
+  <button onclick="addVideo()">追加</button>
+  <div>
+    <input type="number" id="totalMinutes" value="30" min="1" style="width:80px;">分まで再生
+    <button onclick="startShuffle()">再生開始</button>
+  </div>
+</div>
+
+<div id="mainContainer">
+  <div id="videoContainer">
+    <div id="player"></div>
+  </div>
+  <div id="videoListContainer">
+    <ul id="videoList"></ul>
+  </div>
+</div>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+let player;
+let videos = []; // {id, title}
+let playedVideos = [];
+let totalSecondsTarget = 0;
+let currentTotal = 0;
+
+// YouTube IFrame API
+function onYouTubeIframeAPIReady() {
+  player = new YT.Player('player', {
+    height: '360',
+    width: '640',
+    videoId: '',
+    events: { 'onStateChange': onPlayerStateChange }
+  });
+}
+
+// 動画追加
+function addVideo() {
+  let url = document.getElementById('videoURL').value.trim();
+  if(!url) return;
+  let videoId = url.includes("youtu.be") ? url.split("/").pop() : new URL(url).searchParams.get("v");
+  if(!videoId) return alert("無効なURLです");
+
+  // タイトル取得用の一時プレイヤー
+  let tempDiv = document.createElement('div');
+  document.body.appendChild(tempDiv);
+  let tempPlayer = new YT.Player(tempDiv, {
+    height: '0', width: '0',
+    videoId: videoId,
+    events: {
+      'onReady': (e)=>{
+        let title = e.target.getVideoData().title || videoId;
+        videos.push({id: videoId, title: title});
+        renderList();
+        tempPlayer.destroy();
+        document.body.removeChild(tempDiv);
+      }
+    }
+  });
+  document.getElementById('videoURL').value = '';
+}
+
+// 削除
+function removeVideo(index){
+  videos.splice(index,1);
+  renderList();
+}
+
+// リスト表示
+function renderList(){
+  let list = document.getElementById('videoList');
+  list.innerHTML = '';
+  videos.forEach((video,index)=>{
+    let li = document.createElement('li');
+    li.innerHTML = `<span>${video.title}</span><button onclick="removeVideo(${index})">削除</button>`;
+    list.appendChild(li);
+  });
+}
+
+// 再生開始
+function startShuffle(){
+  if(videos.length===0){ alert("動画を追加してください"); return; }
+  playedVideos = [];
+  currentTotal = 0;
+  totalSecondsTarget = parseInt(document.getElementById('totalMinutes').value)*60;
+  playNext();
+}
+
+// 次の動画再生
+function playNext(){
+  let available = videos.filter(v => !playedVideos.includes(v.id));
+  if(available.length === 0){
+    playedVideos = [];
+    available = [...videos];
+  }
+  let index = Math.floor(Math.random()*available.length);
+  let nextVideo = available[index];
+  player.loadVideoById(nextVideo.id);
+  playedVideos.push(nextVideo.id);
+}
+
+// 動画終了
+function onPlayerStateChange(event){
+  if(event.data===YT.PlayerState.ENDED){
+    currentTotal += player.getDuration();
+    if(currentTotal < totalSecondsTarget + 300){ // ±5分
+      playNext();
+    }
+  }
+}
+</script>
+</body>
+</html>
