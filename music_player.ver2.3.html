@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Shuffle Music Player — 完成版</title>
+<style>
+  :root{
+    --bg:#262626;
+    --panel:#333;
+    --panel-2:#3a3a3a;
+    --muted:#bdbdbd;
+    --accent:#dcdcdc;
+    --radius:12px;
+  }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--accent);font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial;}
+  .wrap{max-width:1400px;margin:24px auto;padding:20px;}
+  h1{margin:0 0 18px 40px;font-size:28px;font-weight:700;color:var(--accent);text-align:left;}
+  /* Controls aligned to video left edge */
+  .controls{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:0 0 20px 40px;}
+  .controls input[type=text], .controls input[type=number]{background:var(--panel);border:none;padding:12px;border-radius:14px;color:var(--accent);outline:none;font-size:14px;}
+  .controls input[type=text]{width:360px;min-width:160px;}
+  .controls input[type=number]{width:92px;appearance:textfield;}
+  .controls input[type=number]::-webkit-inner-spin-button,.controls input[type=number]::-webkit-outer-spin-button{appearance:none;margin:0;}
+  .controls button{background:var(--panel-2);border:none;color:var(--accent);padding:12px 18px;border-radius:14px;cursor:pointer;font-weight:600}
+  .controls button:hover{filter:brightness(1.05)}
+  .layout{display:flex;gap:70px;margin-left:40px;align-items:flex-start;max-width:calc(100% - 80px);}
+  /* video area */
+  .video-area{flex:0 0 auto; width:720px; max-width:65vw;}
+  .aspect{position:relative;width:100%;height:0;padding-bottom:56.25%;background:#000;border-radius:var(--radius);overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.6)}
+  .aspect iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+  /* right list */
+  .list-panel{flex:0 0 360px;background:var(--panel);border-radius:var(--radius);padding:12px;max-height:calc(56.25% * 1vw + 400px); /* flexible */}
+  .list-panel h2{margin:0 0 8px 0;color:var(--muted);font-size:13px;font-weight:700}
+  .playlist{list-style:none;padding:0;margin:0;max-height:360px;overflow:auto}
+  .playlist li{display:flex;justify-content:space-between;align-items:center;padding:10px;border-radius:12px;background:var(--panel-2);margin:8px 0;color:var(--accent);font-weight:600;font-size:13px}
+  .playlist li .meta{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}
+  .playlist li button{background:#555;border:none;color:var(--accent);padding:8px 10px;border-radius:10px;cursor:pointer}
+  .meta-time{color:var(--muted);font-size:12px;margin-left:8px;font-weight:500}
+  /* status / progress */
+  .status{margin-left:40px;margin-top:12px;display:flex;align-items:center;gap:12px}
+  .status .info{color:var(--muted);font-size:13px}
+  .progress{width:380px;height:10px;background:#2b2b2b;border-radius:999px;overflow:hidden}
+  .progress > i{display:block;height:100%;background:linear-gradient(90deg,#5f5f5f,#8a8a8a);width:0%}
+  /* small responsive */
+  @media(max-width:980px){
+    .layout{flex-direction:column;gap:24px;margin-left:20px;padding-bottom:20px}
+    .list-panel{width:94%}
+    .video-area{width:100%}
+    .controls{margin-left:20px}
+    h1{margin-left:20px}
+    .status{margin-left:20px}
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Shuffle Music Player</h1>
+
+    <div class="controls">
+      <input id="urlIn" placeholder="YouTube URL を貼り付け (youtu.be or youtube.com/watch?v=...)" />
+      <button id="addBtn">追加</button>
+      <input id="minutes" type="number" value="30" min="1" />
+      <button id="startBtn">再生開始</button>
+      <button id="stopBtn">停止</button>
+      <button id="fetchBtn">長さを取得（必須）</button>
+    </div>
+
+    <div class="layout">
+      <div class="video-area">
+        <div id="videoWrapper" class="aspect">
+          <!-- iframe (YT player) will be injected here -->
+        </div>
+      </div>
+
+      <div class="list-panel">
+        <h2>再生リスト</h2>
+        <ul id="playlist" class="playlist"></ul>
+        <div style="height:10px"></div>
+        <div style="color:var(--muted);font-size:13px">取得状況: <span id="fetchStatus">未取得</span></div>
+      </div>
+    </div>
+
+    <div class="status">
+      <div class="info">総目標: <span id="targetMin">30</span> 分</div>
+      <div class="info">累積再生: <span id="accum">0:00</span></div>
+      <div class="progress" title="動画情報取得進捗"><i id="progBar"></i></div>
+      <div style="margin-left:8px;color:var(--muted);font-size:12px">※長さの取得は最初に必要です（初回のみ時間がかかります）</div>
+    </div>
+  </div>
+
+<script>
+/*
+  完成版スクリプト
+  - 依存: YouTube IFrame Player API を利用
+  - 動画長さ取得は順次 tempPlayer で行う
+  - 再生は mainPlayer（埋め込み）で行い、ended イベントで次を決定
+*/
+
+// load YouTube IFrame API script
+(function(){ var s = document.createElement('script'); s.src="https://www.youtube.com/iframe_api"; document.head.appendChild(s); })();
+
+// Data model
+let tracks = []; // {id, url, duration (sec) or null, title?}
+let durationsFetched = 0;
+let mainPlayer = null;
+let tempPlayer = null;
+let isFetching = false;
+let playing = false;
+let playedSet = new Set();
+let playOrder = []; // selected order in runtime (sequence)
+let currentIndex = -1;
+let targetSeconds = 30*60; // default
+
+// UI refs
+const urlIn = document.getElementById('urlIn');
+const addBtn = document.getElementById('addBtn');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const fetchBtn = document.getElementById('fetchBtn');
+const playlistEl = document.getElementById('playlist');
+const fetchStatus = document.getElementById('fetchStatus');
+const progBar = document.getElementById('progBar');
+const targetMinEl = document.getElementById('targetMin');
+const minutesInput = document.getElementById('minutes');
+const accumEl = document.getElementById('accum');
+
+addBtn.addEventListener('click', onAdd);
+fetchBtn.addEventListener('click', fetchAllDurations);
+startBtn.addEventListener('click', onStart);
+stopBtn.addEventListener('click', onStop);
+minutesInput.addEventListener('change', ()=>{ targetMinEl.textContent = minutesInput.value; targetSeconds = parseInt(minutesInput.value)*60; });
+
+// helper: format seconds to M:SS
+function fmt(s){
+  if(!s && s!==0) return "--:--";
+  s = Math.round(s);
+  const m = Math.floor(s/60);
+  const sec = s%60;
+  return `${m}:${sec.toString().padStart(2,'0')}`;
+}
+
+function onAdd(){
+  const url = urlIn.value.trim();
+  if(!url) return alert("URLを入力してください");
+  let id = extractId(url);
+  if(!id) return alert("無効なYouTube URLです");
+  // avoid duplicates by id
+  if(tracks.some(t=>t.id===id)) { urlIn.value=''; return; }
+  tracks.push({id, url, duration:null, title: null});
+  renderPlaylist();
+  urlIn.value='';
+  // mark needs fetching
+  fetchStatus.textContent = '未取得 (長さ未取得の動画があります)';
+  updateProg();
+}
+
+// extract video id (simple)
+function extractId(url){
+  try{
+    if(url.includes('youtu.be/')) return url.split('youtu.be/').pop().split(/[?&]/)[0];
+    const u = new URL(url);
+    return u.searchParams.get('v');
+  }catch(e){ return null; }
+}
+
+function renderPlaylist(){
+  playlistEl.innerHTML = '';
+  tracks.forEach((t,i)=>{
+    const li = document.createElement('li');
+    const meta = document.createElement('div');
+    meta.className='meta';
+    const name = document.createElement('span');
+    name.className='meta-title';
+    name.textContent = t.title ? t.title : t.url;
+    name.style.maxWidth='220px';
+    name.style.display='inline-block';
+    name.style.overflow='hidden';
+    name.style.textOverflow='ellipsis';
+    const timeSpan = document.createElement('span');
+    timeSpan.className='meta-time';
+    timeSpan.textContent = t.duration ? fmt(t.duration) : '??:??';
+    meta.appendChild(name);
+    meta.appendChild(timeSpan);
+    const btn = document.createElement('button');
+    btn.textContent = '削除';
+    btn.onclick = ()=>{ tracks.splice(i,1); renderPlaylist(); updateProg(); };
+    li.appendChild(meta);
+    li.appendChild(btn);
+    playlistEl.appendChild(li);
+  });
+  updateProg();
+}
+
+// --------- duration fetching using a temp hidden player ----------
+function fetchAllDurations(){
+  if(isFetching) return;
+  if(tracks.length===0) return alert("リストが空です。まず動画を追加してください。");
+  isFetching = true;
+  fetchStatus.textContent = '取得中...';
+  durationsFetched = 0;
+  progBar.style.width = '0%';
+  // create temp div
+  let tempDiv = document.createElement('div');
+  tempDiv.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;';
+  document.body.appendChild(tempDiv);
+  // load API player for each track sequentially
+  let i = 0;
+  function loadNext(){
+    if(i>=tracks.length){ // done
+      document.body.removeChild(tempDiv);
+      isFetching = false;
+      fetchStatus.textContent = '完了';
+      renderPlaylist();
+      return;
+    }
+    const id = tracks[i].id;
+    // create YT player
+    tempDiv.innerHTML = `<div id="__tmp${i}"></div>`;
+    tempPlayer = new YT.Player(`__tmp${i}`, {
+      height: '1', width:'1', videoId: id,
+      events:{
+        'onReady': function(e){
+          // get duration & title
+          try{
+            const d = e.target.getDuration();
+            const info = e.target.getVideoData();
+            tracks[i].duration = Math.max(1, Math.round(d)); // at least 1s guard
+            tracks[i].title = info && info.title ? info.title : tracks[i].url;
+          }catch(err){
+            tracks[i].duration = null;
+          }
+          // destroy
+          try{ e.target.destroy(); }catch(_){}
+          i++;
+          durationsFetched++;
+          progBar.style.width = `${Math.round((durationsFetched/tracks.length)*100)}%`;
+          // slight delay to avoid quota/spam
+          setTimeout(loadNext, 300);
+        },
+        'onError': function(e){
+          // if error (private/removed), set duration null and continue
+          tracks[i].duration = null;
+          tracks[i].title = tracks[i].url;
+          try{ e.target.destroy(); }catch(_){}
+          i++;
+          durationsFetched++;
+          progBar.style.width = `${Math.round((durationsFetched/tracks.length)*100)}%`;
+          setTimeout(loadNext, 300);
+        }
+      }
+    });
+  }
+  // ensure YT API ready
+  if(typeof YT==='undefined' || !YT.Player){
+    // should rarely happen because API loaded on page, but wait
+    let check=0;
+    const wait = setInterval(()=>{
+      check++;
+      if(window.YT && YT.Player){
+        clearInterval(wait);
+        loadNext();
+      } else if(check>50){
+        clearInterval(wait);
+        isFetching=false;
+        fetchStatus.textContent='API未ロード';
+        document.body.removeChild(tempDiv);
+        alert('YouTube IFrame API が読み込まれていません。ページをリロードして再試行してください。');
+      }
+    },200);
+  }else loadNext();
+}
+
+// -------- main player lifecycle ----------
+function onYouTubeIframeAPIReady(){
+  // create visible player (empty initially)
+  mainPlayer = new YT.Player(document.createElement('div'), {
+    height: '360', width:'640',
+    events:{
+      'onReady': function(e){
+        // move iframe into our wrapper
+        const iframe = e.target.getIframe();
+        const w = document.getElementById('videoWrapper');
+        w.innerHTML=''; w.appendChild(iframe);
+      },
+      'onStateChange': onPlayerStateChange
+    }
+  });
+}
+
+// handle player ended
+function onPlayerStateChange(ev){
+  // 0 => ended
+  if(ev.data === YT.PlayerState.ENDED){
+    // update current total
+    // get duration (in case)
+    const dur = Math.round(mainPlayer.getDuration() || 0);
+    currentTotal += dur;
+    accumEl.textContent = fmt(currentTotal);
+    // check stop condition
+    if(shouldStopAfterCurrent()){
+      playing = false;
+      alert('指定時間に到達（近似）またはリスト終了のため停止しました。');
+      return;
+    }
+    // else play next
+    setTimeout(()=>{ playNextOrdered(); }, 400);
+  }
+}
+
+// determine whether to stop (after current finished)
+function shouldStopAfterCurrent(){
+  // if cumulative within [target-300, target+300] -> stop
+  if(currentTotal >= targetSeconds - 300 && currentTotal <= targetSeconds + 300) return true;
+  // if played everything and no more available -> stop
+  if(playedSet.size >= tracks.length && tracks.length>0){
+    // if after full round still not in range, stop anyway (user requested approximate)
+    return true;
+  }
+  return false;
+}
+
+// build next candidate according to durations and target
+function chooseNextCandidate(){
+  // available (not played this round)
+  const avail = tracks.filter(t=> !playedSet.has(t.id) && (t.duration || t.duration===0));
+  // If any have null duration, treat them as unknown and include but deprioritize
+  const unknowns = tracks.filter(t=> !playedSet.has(t.id) && (t.duration==null));
+  let candidates = avail.slice();
+  if(candidates.length===0) candidates = unknowns.slice();
+  if(candidates.length===0){
+    // if none available -> round complete, reset
+    playedSet.clear();
+    return chooseNextCandidate();
+  }
+  // prefer candidates where currentTotal + dur <= target + 300
+  const fit = candidates.filter(c => (currentTotal + (c.duration||0)) <= (targetSeconds + 300));
+  if(fit.length>0){
+    // choose the one that gets closest to target (maximize currentTotal + dur)
+    fit.sort((a,b)=> (currentTotal + (b.duration||0)) - (currentTotal + (a.duration||0)) );
+    return fit[0];
+  } else {
+    // none fit within upper bound; pick smallest duration to minimize overshoot
+    candidates.sort((a,b)=> (a.duration||999999) - (b.duration||999999));
+    return candidates[0];
+  }
+}
+
+function playNextOrdered(){
+  if(tracks.length===0) { alert('再生リストが空です'); return; }
+  // choose candidate according to algorithm
+  const next = chooseNextCandidate();
+  if(!next) { alert('次の候補が見つかりませんでした'); return; }
+  // mark played
+  playedSet.add(next.id);
+  // load and play
+  mainPlayer.loadVideoById(next.id, 0, "default");
+  playing = true;
+  currentIndex++;
+}
+
+// UI: start/stop
+function onStart(){
+  if(tracks.length===0) return alert('まず動画を追加してください');
+  // ensure durations fetched for all (best-effort)
+  const notFetched = tracks.filter(t=> t.duration==null);
+  if(notFetched.length>0){
+    if(!confirm('一部動画の長さが未取得です。取得してから再生しますか？（取得には時間がかかります）')) {
+      // user wants to proceed without durations: mark unknown durations as large (estimate 4 min = 240s)
+      tracks.forEach(t=>{ if(t.duration==null) t.duration = 240; });
+      renderPlaylist();
+    } else {
+      fetchAllDurations();
+      return;
+    }
+  }
+  // reset state
+  playedSet.clear();
+  playOrder = [];
+  currentIndex = -1;
+  currentTotal = 0;
+  accumEl.textContent = fmt(currentTotal);
+  targetSeconds = parseInt(minutesInput.value)*60;
+  targetMinEl.textContent = minutesInput.value;
+  // first play
+  playNextOrdered();
+}
+
+function onStop(){
+  if(mainPlayer && typeof mainPlayer.stopVideo === 'function'){
+    mainPlayer.stopVideo();
+  }
+  playing = false;
+}
+
+// progress helper
+function updateProg(){
+  const total = tracks.length;
+  if(total===0){ progBar.style.width='0%'; fetchStatus.textContent='未取得'; return; }
+  const got = tracks.filter(t=> typeof t.duration === 'number').length;
+  const p = Math.round((got/total)*100);
+  progBar.style.width = p + '%';
+  fetchStatus.textContent = (got===total) ? '完了' : `取得 ${got}/${total}`;
+  renderPlaylist();
+}
+
+// expose YT callback
+window.onYouTubeIframeAPIReady = onYouTubeIframeAPIReady;
+
+</script>
+</body>
+</html>
